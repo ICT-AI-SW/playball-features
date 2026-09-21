@@ -1,0 +1,247 @@
+import axios from 'axios';
+import reduxjsToolkit from '@reduxjs/toolkit';
+const { createAsyncThunk, createSlice, createSelector } = reduxjsToolkit;
+import jsonpatch from 'json-patch';
+import { UTCDate } from '@date-fns/utc';
+import { addSeconds, differenceInSeconds, format } from 'date-fns';
+import logger from '../logger.js';
+import { get } from '../config.js';
+
+const initialState = {
+  loading: false,
+  fullUpdateRequired: false,
+  error: null,
+  selectedId: null,
+  delay: 0,
+  games: {},
+};
+
+function makeDiffParams(start, end) {
+  const endParam = start ? '&endTimecode=' : '?timecode=';
+  const startParam = start ? `/diffPatch?startTimecode=${start}` : '';
+  if (end) {
+    return `${startParam}${endParam}${end}`;
+  } else {
+    return startParam;
+  }
+}
+
+export const fetchGame = createAsyncThunk(
+  'games/fetch',
+  async ({id, start, delay}) => {
+    const end = delay > 0
+      ? format(addSeconds(new UTCDate(Date.now()), -delay), 'yyyyMMdd_HHmmss')
+      : null;
+    const diffParams = makeDiffParams(start, end);
+    const url = `https://statsapi.mlb.com/api/v1.1/game/${id}/feed/live${diffParams}`;
+    logger.info(`GET ${url}`);
+    const response = await axios.get(url);
+    return response.data;
+  }
+);
+
+export const setReplayGame = createAsyncThunk(
+  'games/setReplay',
+  async (id) => {
+    const url = `https://statsapi.mlb.com/api/v1.1/game/${id}/feed/live?fields=gamePk,gameData,datetime,gameInfo,dateTime,firstPitch`;
+    logger.info(`GET ${url}`);
+    const response = await axios.get(url);
+    return response.data;
+  }
+);
+
+export const gamesSlice = createSlice({
+  name: 'games',
+  initialState,
+  reducers: { 
+    setLiveGame(state, action) {
+      state.selectedId = action.payload;
+      state.delay = get('live-delay') || 0;
+    },
+  },
+  extraReducers: (builder) => {
+    builder.addCase(setReplayGame.pending, (state) => {
+      state.loading = true;
+    });
+    builder.addCase(setReplayGame.fulfilled, (state, action) => {
+      state.loading = false;
+      state.error = null;
+      state.selectedId = action.payload.gamePk;
+      state.fullUpdateRequired = true;
+      const start = action.payload.gameData.gameInfo.firstPitch || action.payload.gameData.datetime.dateTime;
+      state.delay = differenceInSeconds(new Date(), start);
+    });
+    builder.addCase(setReplayGame.rejected, (state, action) => {
+      state.loading = false;
+      state.fullUpdateRequired = true;
+      state.error = action.error;
+    });
+    builder.addCase(fetchGame.pending, (state) => {
+      state.loading = true;
+    });
+    builder.addCase(fetchGame.fulfilled, (state, action) => {
+      const id = state.selectedId;
+      let game = state.games[id];
+      let patchError = false;
+      if (Array.isArray(action.payload)) {
+        action.payload.forEach(obj => {
+          if (patchError) {
+            return;
+          }
+          try {
+            jsonpatch.apply(game || {}, obj.diff);
+          } catch (e) {
+            patchError = true;
+            return;
+          }
+        });
+      } else {
+        game = action.payload;
+      }
+      if (patchError) {
+        state.fullUpdateRequired = true;
+      } else {
+        state.fullUpdateRequired = false;
+        state.error = null;
+        state.games[id] = game;
+      }
+      state.loading = false;
+    });
+    builder.addCase(fetchGame.rejected, (state, action) => {
+      state.fullUpdateRequired = true;
+      state.loading = false;
+      state.error = action.error;
+    });
+  }
+});
+
+export const { setLiveGame } = gamesSlice.actions;
+
+const gamesRoot = state => state.games;
+
+export const selectLoading = createSelector(
+  gamesRoot,
+  root => root.loading
+);
+
+export const selectError = createSelector(
+  gamesRoot,
+  root => root.error
+);
+
+export const selectFullUpdateRequired = createSelector(
+  gamesRoot,
+  root => root.fullUpdateRequired
+);
+
+export const selectSelectedId = createSelector(
+  gamesRoot,
+  root => root.selectedId
+);
+
+export const selectDelay = createSelector(
+  gamesRoot,
+  root => root.delay
+);
+
+export const selectGame = createSelector(
+  [gamesRoot, selectSelectedId],
+  (root, id) => root.games[id]
+);
+
+const selectLiveData = createSelector(
+  selectGame,
+  game => game.liveData
+);
+
+const selectPlays = createSelector(
+  selectLiveData,
+  data => data.plays
+);
+
+export const selectCurrentPlay = createSelector(
+  selectPlays,
+  plays => plays.currentPlay
+);
+
+export const selectAllPlays = createSelector(
+  selectPlays,
+  plays => plays.allPlays
+);
+
+const selectBoxscoreRoot = createSelector(
+  selectLiveData,
+  data => data.boxscore
+);
+
+export const selectBoxscore = createSelector(
+  selectBoxscoreRoot,
+  boxscore => boxscore?.teams
+);
+
+export const selectGameInfo = createSelector(
+  selectBoxscoreRoot,
+  boxscore => boxscore?.info
+);
+
+export const selectPitchingNotes = createSelector(
+  selectBoxscoreRoot,
+  boxscore => boxscore?.pitchingNotes
+);
+
+export const selectLineScore = createSelector(
+  selectLiveData,
+  data => data.linescore
+);
+
+export const selectDecisions = createSelector(
+  selectLiveData,
+  data => data.decisions
+);
+
+const selectGameData = createSelector(
+  selectGame,
+  game => game.gameData
+);
+
+export const selectGameStatus = createSelector(
+  selectGameData,
+  game => game.status
+);
+
+export const selectPlayers = createSelector(
+  selectGameData,
+  gameData => gameData.players
+);
+
+export const selectTeams = createSelector(
+  selectGameData,
+  gameData => gameData.teams
+);
+
+export const selectVenue = createSelector(
+  selectGameData,
+  gameData => gameData.venue
+);
+
+export const selectStartTime = createSelector(
+  selectGameData,
+  gameData => gameData.datetime?.dateTime
+);
+
+export const selectProbablePitchers = createSelector(
+  selectGameData,
+  gameData => gameData.probablePitchers
+);
+
+export const selectReview = createSelector(
+  selectGameData,
+  gameData => gameData.review
+);
+
+export const selectAbsChallenges = createSelector(
+  selectGameData,
+  gameData => gameData.absChallenges
+);
+
+export default gamesSlice.reducer;

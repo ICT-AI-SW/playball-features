@@ -1,0 +1,74 @@
+import axios from 'axios';
+import reduxjsToolkit from '@reduxjs/toolkit';
+const { createAsyncThunk, createSlice, createSelector } = reduxjsToolkit;
+import { getSport } from '../utils.js';
+
+const initialState = {
+  loading: false,
+  error: null,
+  data: null,
+};
+
+const SEASON = new Date().getFullYear();
+
+export const fetchStandings = createAsyncThunk(
+  'standings/fetch',
+  async () => {
+    const sport = getSport();
+
+    if (sport === 'wbc') {
+      // WBC standings - try sportId-based endpoint
+      // If no data, return empty structure (component will handle gracefully)
+      const response = await axios.get(
+        `https://statsapi.mlb.com/api/v1/standings?sportId=51&season=${SEASON}`
+      );
+      return response.data;
+    } else {
+      // MLB standings (existing logic)
+      const url = `https://statsapi.mlb.com/api/v1/standings?leagueId=103,104&season=${SEASON}&standingsTypes=regularSeason&hydrate=division,team`;
+      const response = await axios.get(url);
+      return response.data;
+    }
+  }
+);
+  
+export const standingsSlice = createSlice({
+  name: 'standings',
+  initialState,
+  reducers: { },
+  extraReducers: (builder) => {
+    builder.addCase(fetchStandings.pending, (state) => {
+      state.loading = true;
+    });
+    builder.addCase(fetchStandings.fulfilled, (state, action) => {
+      state.loading = false;
+      state.data = action.payload;
+      state.error = null;
+    });
+    builder.addCase(fetchStandings.rejected, (state, action) => {
+      state.loading = false;
+      state.data = null;
+      state.error = action.error;
+    });
+  }
+});
+  
+const standingsSelector = state => state.standings;
+  
+export const selectLoading = createSelector(
+  standingsSelector,
+  standings => standings.loading
+);
+    
+export const selectError = createSelector(
+  standingsSelector,
+  standings => standings.error
+);
+      
+export const selectData = createSelector(
+  standingsSelector,
+  standings => standings.data
+);
+       
+export default standingsSlice.reducer;
+        
